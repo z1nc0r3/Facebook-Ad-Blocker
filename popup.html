@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>FB Ad Filter • Options</title>
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<link rel="stylesheet" href="styles.css" />
+	</head>
+	<body>
+		<div class="popup-wrapper">
+			<div class="header">
+				<h1>FB Ad Filter</h1>
+			</div>
+
+			<div class="content">
+				<div class="row">
+					<input id="enabled" type="checkbox" />
+					<div>
+						<label for="enabled">Enabled</label>
+						<div class="desc">Turn the extension ON/OFF.</div>
+					</div>
+				</div>
+
+				<div class="row">
+					<input id="debugMode" type="checkbox" />
+					<div>
+						<label for="debugMode">Debug mode (highlight instead of hide)</label>
+						<div class="desc">When ON, sponsored posts are outlined and labeled. When OFF (default), they are hidden.</div>
+					</div>
+				</div>
+
+				<div class="row">
+					<input id="showBanner" type="checkbox" />
+					<div>
+						<label for="showBanner">Show banner where a post is hidden</label>
+						<div class="desc">Adds a small inline banner where the sponsored post was removed..</div>
+					</div>
+				</div>
+
+				<div class="save">
+					<button id="saveBtn">Save Settings</button>
+					<span id="savedOk" class="ok">Saved ✓</span>
+				</div>
+			</div>
+		</div>
+
+		<script src="popup.js"></script>
+	</body>
+</html>

@@ -1,0 +1,17 @@
+{
+	"manifest_version": 3,
+	"name": "FB Ad Filter",
+	"version": "1.0.0",
+	"permissions": ["storage"],
+	"action": {
+		"default_title": "FB Ad Filter",
+		"default_popup": "popup.html"
+	},
+	"content_scripts": [
+		{
+			"matches": ["*://*.facebook.com/*", "*://facebook.com/*", "*://m.facebook.com/*", "*://www.facebook.com/*"],
+			"js": ["content.js"],
+			"run_at": "document_idle"
+		}
+	]
+}
