@@ -8,8 +8,11 @@ It works by reconstructing obfuscated "Sponsored" labels, so even when Facebook 
 
 - 🔍 Detects sponsored posts by reconstructing hidden "Sponsored" text.  
 - 🚫 Hides sponsored posts from your feed (default behavior).  
-- 🟨 Debug Mode: highlight sponsored posts instead of hiding them.  
-- 📌 Optional banners: show a placeholder banner where the post was hidden.  
+- 🟨 Debug Mode: highlight sponsored posts instead of hiding them.
+  <img width="705" height="598" alt="image" src="https://github.com/user-attachments/assets/85f1abe9-ea93-4587-b6ca-2f62fd67b296" />
+- 📌 Optional banners: show a placeholder banner where the post was hidden.
+  <img width="731" height="95" alt="image" src="https://github.com/user-attachments/assets/89a0e264-8476-468e-b1de-14516f401dd9" />
+
 
 
 ## ⚙️ Installation (Developer Mode)
