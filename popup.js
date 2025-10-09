@@ -30,7 +30,6 @@ async function save() {
 	setTimeout(() => (ok.style.display = "none"), 1200);
 }
 
-// Preventing both DebugMode and ShowBanner options are enabled at the same time.
 function handleMutualExclusion(changedCheckbox) {
 	const debugMode = $("debugMode");
 	const showBanner = $("showBanner");
