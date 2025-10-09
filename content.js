@@ -1,59 +1,20 @@
 (function () {
 	"use strict";
 
-	// =========================
-	// SETTINGS
-	// =========================
 	const DEFAULTS = {
-		enabled: true, // NEW master switch
-		debugMode: false, // OFF => hide
+		enabled: true,
+		debugMode: false,
 		showBanner: false,
 	};
 	let SETTINGS = { ...DEFAULTS };
 
-	// Track posts so we can revert when disabling
-	const markedPosts = new Set(); // stores Elements we touched
+	const markedPosts = new Set();
 
-	chrome.storage?.sync.get(DEFAULTS, (cfg) => {
-		SETTINGS = { ...DEFAULTS, ...cfg };
-	});
-
-	chrome.runtime?.onMessage.addListener((msg) => {
-		if (msg?.type === "fb-sponsored-settings-changed") {
-			applyNewSettings(msg.cfg);
-		}
-	});
-	chrome.storage?.onChanged?.addListener((changes, area) => {
-		if (area === "sync") {
-			const next = { ...SETTINGS };
-			for (const k of Object.keys(DEFAULTS)) {
-				if (k in changes) next[k] = changes[k].newValue;
-			}
-			applyNewSettings(next);
-		}
-	});
-
-	function applyNewSettings(next) {
-		const prev = { ...SETTINGS };
-		SETTINGS = { ...DEFAULTS, ...next };
-		if (!SETTINGS.enabled && prev.enabled) {
-			unmarkAll();
-		} else if (SETTINGS.enabled && !prev.enabled) {
-			rafDebounce(scanForObfuscatedAnchors);
-		} else {
-			refreshMarked();
-		}
-	}
-
-	// =========================
-	// CONSTANTS
-	// =========================
 	const PRIVACY_ATTR_SELECTOR = 'a[attributionsrc^="/privacy_sandbox/comet/register/source/"]';
-	const POST_SELECTORS = ['[role="article"]', '[data-pagelet*="FeedUnit"]', '[data-testid="fbfeed_story"]', ".userContentWrapper", "[data-ft]", "[aria-posinset]"];
 
-	// =========================
-	// STYLES
-	// =========================
+	const POST_SELECTORS = ['[role="article"]', '[data-pagelet*="FeedUnit"]', '[data-testid="fbfeed_story"]', ".userContentWrapper", "[data-ft]", "[aria-posinset]"];
+	const POST_SELECTOR_STR = POST_SELECTORS.join(",");
+
 	function injectStylesOnce() {
 		if (document.getElementById("sponsor-detector-styles")) return;
 		const css = `
@@ -73,7 +34,7 @@
       .sponsored-hidden-post { display: none !important; }
 
       .sponsored-placeholder {
-        display: block; /* always block; we control presence programmatically */
+        display: block;
         width: 100%;
         margin: 8px 0;
         padding: 10px 12px;
@@ -90,9 +51,43 @@
 		document.documentElement.appendChild(style);
 	}
 
-	// =========================
-	// HELPERS
-	// =========================
+	function wireSettingsSync() {
+		chrome.storage?.sync.get(DEFAULTS, (cfg) => {
+			applyNewSettings({ ...DEFAULTS, ...cfg });
+		});
+
+		chrome.runtime?.onMessage.addListener((msg) => {
+			if (msg?.type === "fb-sponsored-settings-changed") {
+				applyNewSettings({ ...DEFAULTS, ...msg.cfg });
+			}
+		});
+
+		chrome.storage?.onChanged?.addListener((changes, area) => {
+			if (area !== "sync") return;
+			const next = { ...SETTINGS };
+			for (const k of Object.keys(DEFAULTS)) {
+				if (k in changes) next[k] = changes[k].newValue;
+			}
+			applyNewSettings({ ...DEFAULTS, ...next });
+		});
+	}
+
+	function applyNewSettings(next) {
+		const prevEnabled = SETTINGS.enabled;
+		SETTINGS = next;
+
+		if (!SETTINGS.enabled) {
+			if (prevEnabled) unmarkAll();
+			return;
+		}
+
+		if (!prevEnabled) {
+			rafDebounce(scanForObfuscatedAnchors);
+		} else {
+			refreshMarked();
+		}
+	}
+
 	const rafDebounce = (() => {
 		let scheduled = false;
 		return (fn) => {
@@ -115,7 +110,7 @@
 
 	function getPostContainerFrom(el) {
 		if (!el) return null;
-		const nearest = el.closest?.(POST_SELECTORS.join(","));
+		const nearest = el.closest?.(POST_SELECTOR_STR);
 		if (nearest) return nearest;
 
 		let cur = el,
@@ -142,7 +137,6 @@
 		const joinedByGeom = letters.map((i) => i.ch).join("");
 		const raw = (anchor.textContent || "").replace(/\s+/g, " ").trim();
 		const lettersOnly = joinedByGeom.replace(/[^A-Za-z]/g, "");
-
 		return { joinedByGeom, lettersOnly, raw };
 	}
 
@@ -158,41 +152,31 @@
 		return endsWithEd && hasNoNbsp && hasUpperSearly;
 	}
 
-	// Banners
 	function ensurePlaceholderFor(post) {
-		if (!SETTINGS.showBanner) return null;
+		if (!SETTINGS.showBanner) return;
+		const prev = post.previousElementSibling;
+		if (prev?.classList?.contains("sponsored-placeholder")) return;
+		const ph = document.createElement("div");
+		ph.className = "sponsored-placeholder";
+		ph.textContent = "Sponsored post hidden";
+		post.parentNode?.insertBefore(ph, post);
+	}
 
-		let ph = post.previousElementSibling;
-		if (!(ph && ph.classList?.contains("sponsored-placeholder"))) {
-			ph = document.createElement("div");
-			ph.className = "sponsored-placeholder";
-			ph.textContent = "Sponsored post hidden";
-			post.parentNode?.insertBefore(ph, post);
+	function markPost(post, mode /* 'hide' | 'highlight' */) {
+		if (!post) return;
+		post.classList.remove("sponsored-hidden-post", "sponsored-detected-post");
+		if (mode === "hide") {
+			ensurePlaceholderFor(post);
+			post.classList.add("sponsored-hidden-post");
+		} else {
+			post.classList.add("sponsored-detected-post");
 		}
-		return ph;
-	}
-
-	// Hide/Show/Highlight
-	function hideWholePost(post) {
-		if (!post) return;
-		if (SETTINGS.showBanner) ensurePlaceholderFor(post);
-		post.classList.remove("sponsored-detected-post");
-		post.classList.add("sponsored-hidden-post");
-		markedPosts.add(post);
-	}
-
-    // Remove hidden state if switching from hide -> highlight
-	function highlightWholePost(post) {
-		if (!post) return;
-		post.classList.remove("sponsored-hidden-post");
-		post.classList.add("sponsored-detected-post");
 		markedPosts.add(post);
 	}
 
 	function unmark(post) {
 		if (!post) return;
 		post.classList.remove("sponsored-hidden-post", "sponsored-detected-post");
-		// Remove any placeholder we inserted (only the immediate previous sibling we created)
 		const prev = post.previousElementSibling;
 		if (prev && prev.classList?.contains("sponsored-placeholder")) prev.remove();
 	}
@@ -204,57 +188,36 @@
 
 	function refreshMarked() {
 		for (const post of markedPosts) {
-			post.classList.remove("sponsored-hidden-post", "sponsored-detected-post");
-			if (SETTINGS.debugMode) {
-				highlightWholePost(post);
-			} else {
-				hideWholePost(post);
-			}
+			markPost(post, SETTINGS.debugMode ? "highlight" : "hide");
 		}
 	}
 
-	// =========================
-	// CORE SCAN
-	// =========================
 	function scanForObfuscatedAnchors() {
 		if (!SETTINGS.enabled) return;
-
-		const anchors = document.querySelectorAll(PRIVACY_ATTR_SELECTOR);
-		anchors.forEach((a) => {
+		for (const a of document.querySelectorAll(PRIVACY_ATTR_SELECTOR)) {
 			const recon = reconstructVisibleText(a);
 			const hit = isLikelySponsored(recon);
-			if (!hit) return;
+			if (!hit) continue;
 
-			const post = getPostContainerFrom(a) || a.closest(POST_SELECTORS.join(","));
-			if (!post) return;
+			const post = getPostContainerFrom(a) || a.closest(POST_SELECTOR_STR);
+			if (!post) continue;
 
-			if (SETTINGS.debugMode) {
-				highlightWholePost(post);
-			} else {
-				hideWholePost(post);
-			}
-		});
+			markPost(post, SETTINGS.debugMode ? "highlight" : "hide");
+		}
 	}
 
-	// =========================
-	// OBSERVER
-	// =========================
 	function initObserver() {
 		const observer = new MutationObserver((mutations) => {
-			let shouldScan = false;
 			for (const m of mutations) {
 				if (m.type === "childList" && (m.addedNodes?.length || m.removedNodes?.length)) {
-					shouldScan = true;
-					break;
+					rafDebounce(scanForObfuscatedAnchors);
+					return;
 				}
-				if (m.type === "attributes" && m.attributeName === "attributionsrc") {
-					if (m.target?.matches?.(PRIVACY_ATTR_SELECTOR)) {
-						shouldScan = true;
-						break;
-					}
+				if (m.type === "attributes" && m.attributeName === "attributionsrc" && m.target?.matches?.(PRIVACY_ATTR_SELECTOR)) {
+					rafDebounce(scanForObfuscatedAnchors);
+					return;
 				}
 			}
-			if (shouldScan) rafDebounce(scanForObfuscatedAnchors);
 		});
 
 		observer.observe(document.body, {
@@ -267,11 +230,9 @@
 		scanForObfuscatedAnchors();
 	}
 
-	// =========================
-	// BOOT
-	// =========================
 	function initialize() {
 		injectStylesOnce();
+		wireSettingsSync();
 		initObserver();
 	}
 
