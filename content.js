@@ -11,6 +11,7 @@
 	const markedPosts = new Set();
 
 	const PRIVACY_ATTR_SELECTOR = 'a[attributionsrc^="/privacy_sandbox/comet/register/source/"]';
+	const AD_LABEL_LINK_SELECTOR = [PRIVACY_ATTR_SELECTOR, 'a[role="link"][href*="__cft__"]'].join(",");
 
 	const POST_SELECTORS = ['[role="article"]', '[data-pagelet*="FeedUnit"]', '[data-testid="fbfeed_story"]', ".userContentWrapper", "[data-ft]", "[aria-posinset]"];
 	const POST_SELECTOR_STR = POST_SELECTORS.join(",");
@@ -82,7 +83,7 @@
 		}
 
 		if (!prevEnabled) {
-			rafDebounce(scanForObfuscatedAnchors);
+			rafDebounce(scanForAdLabels);
 		} else {
 			refreshMarked();
 		}
@@ -122,27 +123,47 @@
 		return el.closest?.("div") || el;
 	}
 
+	function normalizeGlyphText(text) {
+		return (text || "")
+			.normalize("NFKD")
+			.replace(/[\u0300-\u036f]/g, "")
+			.replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, "")
+			.trim();
+	}
+
 	function reconstructVisibleText(anchor) {
 		const letters = [];
+		const nonObfuscatedClassLetters = [];
 		anchor.querySelectorAll("span").forEach((sp) => {
-			const t = (sp.textContent || "").trim();
+			const t = normalizeGlyphText(sp.textContent).replace(/\s+/g, "");
 			if (t.length === 1 && /[A-Za-z0-9]/.test(t)) {
 				const r = sp.getBoundingClientRect?.();
-				if (r && isFinite(r.left) && isFinite(r.top)) {
+				if (r && isFinite(r.left) && isFinite(r.top) && (r.width > 0 || r.height > 0)) {
 					letters.push({ ch: t, x: Math.round(r.left), y: Math.round(r.top) });
+				}
+				if (!/[A-Z]/.test(sp.className || "")) {
+					nonObfuscatedClassLetters.push(t);
 				}
 			}
 		});
 		letters.sort((a, b) => (a.y === b.y ? a.x - b.x : a.y - b.y));
 		const joinedByGeom = letters.map((i) => i.ch).join("");
-		const raw = (anchor.textContent || "").replace(/\s+/g, " ").trim();
+		const joinedByClass = nonObfuscatedClassLetters.join("");
+		const raw = normalizeGlyphText(anchor.textContent).replace(/\s+/g, " ").trim();
 		const lettersOnly = joinedByGeom.replace(/[^A-Za-z]/g, "");
-		return { joinedByGeom, lettersOnly, raw };
+		const classLettersOnly = joinedByClass.replace(/[^A-Za-z]/g, "");
+		const rawLettersOnly = raw.replace(/[^A-Za-z]/g, "");
+		return { joinedByGeom, joinedByClass, lettersOnly, classLettersOnly, raw, rawLettersOnly };
 	}
 
-	function isLikelySponsored(recon) {
+	function isLikelyAdLabel(recon) {
 		const lo = recon.lettersOnly.toLowerCase();
+		const classLo = recon.classLettersOnly.toLowerCase();
+		const rawLo = recon.rawLettersOnly.toLowerCase();
 		if (lo.includes("sponsored")) return true;
+		if (classLo.includes("sponsored")) return true;
+		if (rawLo === "sponsored") return true;
+		if (lo === "ad" || classLo === "ad" || rawLo === "ad") return true;
 
 		const endsWithEd = lo.endsWith("ed");
 		const hasNoNbsp = !/[\u00A0]/.test(recon.raw);
@@ -192,11 +213,11 @@
 		}
 	}
 
-	function scanForObfuscatedAnchors() {
+	function scanForAdLabels() {
 		if (!SETTINGS.enabled) return;
-		for (const a of document.querySelectorAll(PRIVACY_ATTR_SELECTOR)) {
+		for (const a of document.querySelectorAll(AD_LABEL_LINK_SELECTOR)) {
 			const recon = reconstructVisibleText(a);
-			const hit = isLikelySponsored(recon);
+			const hit = isLikelyAdLabel(recon);
 			if (!hit) continue;
 
 			const post = getPostContainerFrom(a) || a.closest(POST_SELECTOR_STR);
@@ -210,11 +231,15 @@
 		const observer = new MutationObserver((mutations) => {
 			for (const m of mutations) {
 				if (m.type === "childList" && (m.addedNodes?.length || m.removedNodes?.length)) {
-					rafDebounce(scanForObfuscatedAnchors);
+					rafDebounce(scanForAdLabels);
 					return;
 				}
-				if (m.type === "attributes" && m.attributeName === "attributionsrc" && m.target?.matches?.(PRIVACY_ATTR_SELECTOR)) {
-					rafDebounce(scanForObfuscatedAnchors);
+				if (
+					m.type === "attributes" &&
+					(m.attributeName === "attributionsrc" || m.attributeName === "href") &&
+					m.target?.matches?.(AD_LABEL_LINK_SELECTOR)
+				) {
+					rafDebounce(scanForAdLabels);
 					return;
 				}
 			}
@@ -224,10 +249,10 @@
 			subtree: true,
 			childList: true,
 			attributes: true,
-			attributeFilter: ["attributionsrc"],
+			attributeFilter: ["attributionsrc", "href"],
 		});
 
-		scanForObfuscatedAnchors();
+		scanForAdLabels();
 	}
 
 	function initialize() {
