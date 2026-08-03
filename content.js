@@ -11,7 +11,7 @@
 	const markedPosts = new Set();
 
 	const PRIVACY_ATTR_SELECTOR = 'a[attributionsrc^="/privacy_sandbox/comet/register/source/"]';
-	const AD_LABEL_LINK_SELECTOR = [PRIVACY_ATTR_SELECTOR, 'a[role="link"][href*="__cft__"]'].join(",");
+	const AD_LABEL_LINK_SELECTOR = [PRIVACY_ATTR_SELECTOR, 'a[role="link"][href*="__cft__"]', 'a[role="link"][href*="/ads/about/"]'].join(",");
 
 	const POST_SELECTORS = ['[role="article"]', '[data-pagelet*="FeedUnit"]', '[data-testid="fbfeed_story"]', ".userContentWrapper", "[data-ft]", "[aria-posinset]"];
 	const POST_SELECTOR_STR = POST_SELECTORS.join(",");
@@ -160,10 +160,11 @@
 		const lo = recon.lettersOnly.toLowerCase();
 		const classLo = recon.classLettersOnly.toLowerCase();
 		const rawLo = recon.rawLettersOnly.toLowerCase();
+		const classLooksLikeAd = classLo.length === 2 && classLo.includes("a") && classLo.includes("d");
 		if (lo.includes("sponsored")) return true;
 		if (classLo.includes("sponsored")) return true;
 		if (rawLo === "sponsored") return true;
-		if (lo === "ad" || classLo === "ad" || rawLo === "ad") return true;
+		if (lo === "ad" || classLo === "ad" || classLooksLikeAd || rawLo === "ad") return true;
 
 		const endsWithEd = lo.endsWith("ed");
 		const hasNoNbsp = !/[\u00A0]/.test(recon.raw);
