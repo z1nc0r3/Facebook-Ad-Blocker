@@ -174,6 +174,125 @@
 		return endsWithEd && hasNoNbsp && hasUpperSearly;
 	}
 
+	function isKnownAdDisclosureLink(anchor) {
+		const href = anchor?.getAttribute?.("href") || "";
+		return /(?:^|\/)ads\/about(?:[/?#]|$)/i.test(href);
+	}
+
+	function hasTrackingHref(anchor) {
+		const href = anchor?.getAttribute?.("href") || "";
+		return href.includes("__cft__") || href.includes("**cft**");
+	}
+
+	function getSvgUseHref(use) {
+		return (
+			use.getAttribute("href") ||
+			use.getAttribute("xlink:href") ||
+			use.getAttributeNS?.("http://www.w3.org/1999/xlink", "href") ||
+			use.href?.baseVal ||
+			use.href?.animVal ||
+			""
+		);
+	}
+
+	function hasSvgGlyphReference(anchor) {
+		return Array.from(anchor?.querySelectorAll?.("svg use") || []).some((use) => {
+			return SVG_GLYPH_REF_RE.test(getSvgUseHref(use));
+		});
+	}
+
+	function hasAudienceIcon(node) {
+		return Array.from(node?.querySelectorAll?.("svg title, [aria-label], [title]") || []).some((el) => {
+			const label = normalizeGlyphText(el.textContent || el.getAttribute("aria-label") || el.getAttribute("title"));
+			return /shared with|public|friends|only me|custom/i.test(label);
+		});
+	}
+
+	function findMetadataRow(anchor) {
+		let cur = anchor?.parentElement;
+		for (let depth = 0; cur && cur !== document.body && depth < 6; depth++) {
+			const text = normalizeGlyphText(cur.textContent);
+			if (text.includes("\u00b7") && hasAudienceIcon(cur)) return cur;
+			cur = cur.parentElement;
+		}
+		return null;
+	}
+
+	function isCompactSvgLabel(anchor) {
+		const svg = anchor?.querySelector?.("svg");
+		const r = (svg || anchor)?.getBoundingClientRect?.();
+		if (!r || !isFinite(r.width) || !isFinite(r.height)) return false;
+		return r.width >= 8 && r.width <= 72 && r.height >= 8 && r.height <= 28;
+	}
+
+	function isSvgAdDisclosureLabel(anchor) {
+		if (!hasSvgGlyphReference(anchor)) return false;
+		if (!isCompactSvgLabel(anchor)) return false;
+		return !!findMetadataRow(anchor);
+	}
+
+	function collectSelectorCandidates(selectors) {
+		const candidates = new Set();
+		document.querySelectorAll(selectors.join(",")).forEach((el) => candidates.add(el));
+		return candidates;
+	}
+
+	function collectSvgGlyphAnchors() {
+		const candidates = new Set();
+		document.querySelectorAll(SVG_USE_SELECTOR).forEach((use) => {
+			if (SVG_GLYPH_REF_RE.test(getSvgUseHref(use))) {
+				const anchor = use.closest("a");
+				if (anchor) candidates.add(anchor);
+			}
+		});
+		return candidates;
+	}
+
+	// Add new Facebook label variants here; each detector owns its candidates and match rule.
+	const AD_LABEL_DETECTORS = [
+		{
+			name: "ads-about",
+			selectors: [ADS_ABOUT_SELECTOR],
+			detect(anchor) {
+				if (!isKnownAdDisclosureLink(anchor)) return null;
+				return hasSvgGlyphReference(anchor) ? "ads-about-svg" : "ads-about-link";
+			},
+		},
+		{
+			name: "svg-metadata",
+			collectCandidates: collectSvgGlyphAnchors,
+			detect(anchor) {
+				return isSvgAdDisclosureLabel(anchor) ? "svg-metadata" : null;
+			},
+		},
+		{
+			name: "obfuscated-text",
+			selectors: [PRIVACY_ATTR_SELECTOR, TRACKING_HREF_SELECTOR],
+			detect(anchor) {
+				if (!anchor.matches?.(PRIVACY_ATTR_SELECTOR) && !hasTrackingHref(anchor)) return null;
+				return isLikelyAdLabel(reconstructVisibleText(anchor)) ? "obfuscated-text" : null;
+			},
+		},
+	];
+
+	function getDetectorCandidates(detector) {
+		if (detector.collectCandidates) return detector.collectCandidates();
+		return collectSelectorCandidates(detector.selectors);
+	}
+
+	function removePlaceholderFor(post) {
+		const tracked = placeholderByPost.get(post);
+		if (tracked?.isConnected) tracked.remove();
+		placeholderByPost.delete(post);
+
+		let prev = post.previousElementSibling;
+		while (prev?.classList?.contains("sponsored-placeholder")) {
+			const duplicate = prev;
+			prev = duplicate.previousElementSibling;
+			duplicate.remove();
+		}
+	}
+
 	function ensurePlaceholderFor(post) {
 		if (!SETTINGS.showBanner) return;
 		const prev = post.previousElementSibling;
