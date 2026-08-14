@@ -9,9 +9,14 @@
 	let SETTINGS = { ...DEFAULTS };
 
 	const markedPosts = new Set();
+	const placeholderByPost = new WeakMap();
 
 	const PRIVACY_ATTR_SELECTOR = 'a[attributionsrc^="/privacy_sandbox/comet/register/source/"]';
-	const AD_LABEL_LINK_SELECTOR = [PRIVACY_ATTR_SELECTOR, 'a[role="link"][href*="__cft__"]', 'a[role="link"][href*="/ads/about/"]'].join(",");
+	const ADS_ABOUT_SELECTOR = 'a[href*="/ads/about"]';
+	const TRACKING_HREF_SELECTOR = 'a[href*="__cft__"]';
+	const SVG_USE_SELECTOR = "a svg use";
+	const SVG_GLYPH_REF_RE = /^#SvgT\d*$/i;
+	const AD_LABEL_ATTRIBUTE_SELECTOR = [PRIVACY_ATTR_SELECTOR, ADS_ABOUT_SELECTOR, TRACKING_HREF_SELECTOR].join(",");
 
 	const POST_SELECTORS = ['[role="article"]', '[data-pagelet*="FeedUnit"]', '[data-testid="fbfeed_story"]', ".userContentWrapper", "[data-ft]", "[aria-posinset]"];
 	const POST_SELECTOR_STR = POST_SELECTORS.join(",");
@@ -25,7 +30,7 @@
         border-radius: 10px !important;
       }
       .sponsored-detected-post::before {
-        content: "SPONSORED (auto-detected)";
+        content: "AD (" attr(data-sponsor-detector-method) ")";
         position: absolute; z-index: 9999; top: 8px; left: 8px;
         font: 600 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
         color: #fff; background: #ff3b30; padding: 4px 8px; border-radius: 6px;
@@ -295,21 +300,36 @@
 
 	function ensurePlaceholderFor(post) {
 		if (!SETTINGS.showBanner) return;
+		const tracked = placeholderByPost.get(post);
+		if (tracked?.isConnected && tracked.nextElementSibling === post) return;
+		if (tracked?.isConnected) tracked.remove();
+
 		const prev = post.previousElementSibling;
-		if (prev?.classList?.contains("sponsored-placeholder")) return;
+		if (prev?.classList?.contains("sponsored-placeholder")) {
+			placeholderByPost.set(post, prev);
+			return;
+		}
+
 		const ph = document.createElement("div");
 		ph.className = "sponsored-placeholder";
 		ph.textContent = "Sponsored post hidden";
 		post.parentNode?.insertBefore(ph, post);
+		placeholderByPost.set(post, ph);
 	}
 
-	function markPost(post, mode /* 'hide' | 'highlight' */) {
+	function markPost(post, mode /* 'hide' | 'highlight' */, method = "auto-detected") {
 		if (!post) return;
 		post.classList.remove("sponsored-hidden-post", "sponsored-detected-post");
+		post.dataset.sponsorDetectorMethod = method;
 		if (mode === "hide") {
-			ensurePlaceholderFor(post);
+			if (SETTINGS.showBanner) {
+				ensurePlaceholderFor(post);
+			} else {
+				removePlaceholderFor(post);
+			}
 			post.classList.add("sponsored-hidden-post");
 		} else {
+			removePlaceholderFor(post);
 			post.classList.add("sponsored-detected-post");
 		}
 		markedPosts.add(post);
@@ -318,8 +338,8 @@
 	function unmark(post) {
 		if (!post) return;
 		post.classList.remove("sponsored-hidden-post", "sponsored-detected-post");
-		const prev = post.previousElementSibling;
-		if (prev && prev.classList?.contains("sponsored-placeholder")) prev.remove();
+		delete post.dataset.sponsorDetectorMethod;
+		removePlaceholderFor(post);
 	}
 
 	function unmarkAll() {
@@ -329,21 +349,27 @@
 
 	function refreshMarked() {
 		for (const post of markedPosts) {
-			markPost(post, SETTINGS.debugMode ? "highlight" : "hide");
+			markPost(post, SETTINGS.debugMode ? "highlight" : "hide", post.dataset.sponsorDetectorMethod);
 		}
 	}
 
 	function scanForAdLabels() {
 		if (!SETTINGS.enabled) return;
-		for (const a of document.querySelectorAll(AD_LABEL_LINK_SELECTOR)) {
-			const recon = reconstructVisibleText(a);
-			const hit = isLikelyAdLabel(recon);
-			if (!hit) continue;
 
-			const post = getPostContainerFrom(a) || a.closest(POST_SELECTOR_STR);
-			if (!post) continue;
+		const matchedAnchors = new WeakSet();
+		for (const detector of AD_LABEL_DETECTORS) {
+			for (const a of getDetectorCandidates(detector)) {
+				if (matchedAnchors.has(a)) continue;
 
-			markPost(post, SETTINGS.debugMode ? "highlight" : "hide");
+				const method = detector.detect(a);
+				if (!method) continue;
+				matchedAnchors.add(a);
+
+				const post = getPostContainerFrom(a) || a.closest(POST_SELECTOR_STR);
+				if (!post) continue;
+
+				markPost(post, SETTINGS.debugMode ? "highlight" : "hide", method);
+			}
 		}
 	}
 
@@ -357,7 +383,7 @@
 				if (
 					m.type === "attributes" &&
 					(m.attributeName === "attributionsrc" || m.attributeName === "href") &&
-					m.target?.matches?.(AD_LABEL_LINK_SELECTOR)
+					m.target?.matches?.(AD_LABEL_ATTRIBUTE_SELECTOR)
 				) {
 					rafDebounce(scanForAdLabels);
 					return;
