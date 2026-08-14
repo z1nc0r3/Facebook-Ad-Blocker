@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  pull_request:
+    types:
+      - closed
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create release
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout merged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Prepare release metadata
+        id: release_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_branch="${{ github.event.pull_request.head.ref }}"
+          if [[ "$release_branch" == release/* ]]; then
+            tag="${release_branch#release/}"
+          elif [[ "$release_branch" == release-* ]]; then
+            tag="${release_branch#release-}"
+          else
+            echo "Release branches must be named like release/v1.0.0 or release-v1.0.0: $release_branch" >&2
+            exit 1
+          fi
+
+          if [[ -z "$tag" ]]; then
+            echo "Could not derive release tag from branch: $release_branch" >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "zip_name=fb-ad-filter-$tag.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Package extension
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+          zip -r "dist/${{ steps.release_meta.outputs.zip_name }}" \
+            manifest.json \
+            content.js \
+            popup.html \
+            popup.js \
+            styles.css \
+            README.md \
+            icons
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release_meta.outputs.tag }}
+          ZIP_NAME: ${{ steps.release_meta.outputs.zip_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists." >&2
+            exit 1
+          fi
+
+          gh release create "$TAG" \
+            "dist/$ZIP_NAME" \
+            --title "$TAG" \
+            --notes "Chrome extension release for $TAG."
