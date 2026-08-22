@@ -12,23 +12,25 @@
 	const placeholderByPost = new WeakMap();
 
 	const PRIVACY_ATTR_SELECTOR = 'a[attributionsrc^="/privacy_sandbox/comet/register/source/"]';
-	const ADS_ABOUT_SELECTOR = 'a[href*="/ads/about"]';
-	const TRACKING_HREF_SELECTOR = 'a[href*="__cft__"]';
+	const OBFUSCATED_LABEL_LINK_SELECTOR = 'a[href^="?"][href*="__cft__"][target="_blank"]';
 	const SVG_USE_SELECTOR = "a svg use";
-	const SVG_GLYPH_REF_RE = /^#SvgT\d*$/i;
-	const AD_LABEL_ATTRIBUTE_SELECTOR = [PRIVACY_ATTR_SELECTOR, ADS_ABOUT_SELECTOR, TRACKING_HREF_SELECTOR].join(",");
+	// Facebook clips a wider generated SVG; the rendered "Ad" segment occupies about 15.92px.
+	const SVG_AD_CLIPPED_WIDTH = 15.92;
+	const SVG_AD_CLIPPED_WIDTH_TOLERANCE = 0.25;
+	// Generated metadata-text families; the clipped width identifies the rendered Ad label.
+	const SVG_GLYPH_REF_PATTERNS = [/^#SvgT\d*$/i, /^#SvgWml\d+$/i];
+	const AD_LABEL_ATTRIBUTE_SELECTOR = [PRIVACY_ATTR_SELECTOR, OBFUSCATED_LABEL_LINK_SELECTOR].join(",");
 
 	const POST_SELECTORS = ['[role="article"]', '[data-pagelet*="FeedUnit"]', '[data-testid="fbfeed_story"]', ".userContentWrapper", "[data-ft]", "[aria-posinset]"];
 	const POST_SELECTOR_STR = POST_SELECTORS.join(",");
 
 	function injectStylesOnce() {
-		if (document.getElementById("sponsor-detector-styles")) return;
 		const css = `
       .sponsored-detected-post {
-        position: relative !important;
         outline: 1px solid #ff3b30 !important;
         border-radius: 10px !important;
       }
+      .sponsored-debug-positioned { position: relative !important; }
       .sponsored-detected-post::before {
         content: "AD (" attr(data-sponsor-detector-method) ")";
         position: absolute; z-index: 9999; top: 8px; left: 8px;
@@ -51,17 +53,16 @@
         background: rgba(0,0,0,0.03);
       }
     `;
-		const style = document.createElement("style");
-		style.id = "sponsor-detector-styles";
+		let style = document.getElementById("sponsor-detector-styles");
+		if (!style) {
+			style = document.createElement("style");
+			style.id = "sponsor-detector-styles";
+			document.documentElement.appendChild(style);
+		}
 		style.textContent = css;
-		document.documentElement.appendChild(style);
 	}
 
 	function wireSettingsSync() {
-		chrome.storage?.sync.get(DEFAULTS, (cfg) => {
-			applyNewSettings({ ...DEFAULTS, ...cfg });
-		});
-
 		chrome.runtime?.onMessage.addListener((msg) => {
 			if (msg?.type === "fb-sponsored-settings-changed") {
 				applyNewSettings({ ...DEFAULTS, ...msg.cfg });
@@ -78,6 +79,20 @@
 		});
 	}
 
+	function loadInitialSettings() {
+		return new Promise((resolve) => {
+			if (!chrome.storage?.sync?.get) {
+				resolve();
+				return;
+			}
+
+			chrome.storage.sync.get(DEFAULTS, (cfg) => {
+				SETTINGS = { ...DEFAULTS, ...cfg };
+				resolve();
+			});
+		});
+	}
+
 	function applyNewSettings(next) {
 		const prevEnabled = SETTINGS.enabled;
 		SETTINGS = next;
@@ -88,9 +103,11 @@
 		}
 
 		if (!prevEnabled) {
+			revealHiddenPostsForDebug();
 			rafDebounce(scanForAdLabels);
 		} else {
 			refreshMarked();
+			revealHiddenPostsForDebug();
 		}
 	}
 
@@ -162,31 +179,12 @@
 	}
 
 	function isLikelyAdLabel(recon) {
-		const lo = recon.lettersOnly.toLowerCase();
-		const classLo = recon.classLettersOnly.toLowerCase();
-		const rawLo = recon.rawLettersOnly.toLowerCase();
-		const classLooksLikeAd = classLo.length === 2 && classLo.includes("a") && classLo.includes("d");
-		if (lo.includes("sponsored")) return true;
-		if (classLo.includes("sponsored")) return true;
-		if (rawLo === "sponsored") return true;
-		if (lo === "ad" || classLo === "ad" || classLooksLikeAd || rawLo === "ad") return true;
-
-		const endsWithEd = lo.endsWith("ed");
-		const hasNoNbsp = !/[\u00A0]/.test(recon.raw);
-		const firstFive = recon.joinedByGeom.slice(0, 5);
-		const hasUpperSearly = /S/.test(firstFive);
-
-		return endsWithEd && hasNoNbsp && hasUpperSearly;
+		const candidates = [recon.lettersOnly, recon.classLettersOnly, recon.rawLettersOnly].map((text) => text.toLowerCase());
+		return candidates.some((text) => text === "ad" || text === "da" || text === "sponsored");
 	}
 
-	function isKnownAdDisclosureLink(anchor) {
-		const href = anchor?.getAttribute?.("href") || "";
-		return /(?:^|\/)ads\/about(?:[/?#]|$)/i.test(href);
-	}
-
-	function hasTrackingHref(anchor) {
-		const href = anchor?.getAttribute?.("href") || "";
-		return href.includes("__cft__") || href.includes("**cft**");
+	function isObfuscatedLabelLink(anchor) {
+		return !!anchor?.matches?.(OBFUSCATED_LABEL_LINK_SELECTOR);
 	}
 
 	function getSvgUseHref(use) {
@@ -200,9 +198,13 @@
 		);
 	}
 
+	function isKnownSvgGlyphReference(reference) {
+		return SVG_GLYPH_REF_PATTERNS.some((pattern) => pattern.test(reference));
+	}
+
 	function hasSvgGlyphReference(anchor) {
 		return Array.from(anchor?.querySelectorAll?.("svg use") || []).some((use) => {
-			return SVG_GLYPH_REF_RE.test(getSvgUseHref(use));
+			return isKnownSvgGlyphReference(getSvgUseHref(use));
 		});
 	}
 
@@ -223,16 +225,38 @@
 		return null;
 	}
 
-	function isCompactSvgLabel(anchor) {
-		const svg = anchor?.querySelector?.("svg");
-		const r = (svg || anchor)?.getBoundingClientRect?.();
-		if (!r || !isFinite(r.width) || !isFinite(r.height)) return false;
-		return r.width >= 8 && r.width <= 72 && r.height >= 8 && r.height <= 28;
+	function parsePixelValue(value) {
+		const parsed = Number.parseFloat(value || "");
+		return Number.isFinite(parsed) ? parsed : null;
+	}
+
+	function getSvgClippedWidth(svg) {
+		let width = parsePixelValue(svg?.style?.width);
+		let marginRight = parsePixelValue(svg?.style?.marginRight);
+
+		if (width === null || marginRight === null) {
+			const computed = svg ? window.getComputedStyle(svg) : null;
+			if (width === null) width = parsePixelValue(computed?.width);
+			if (marginRight === null) marginRight = parsePixelValue(computed?.marginRight);
+		}
+
+		if (width === null || marginRight === null) return null;
+		return width + marginRight;
+	}
+
+	function hasAdSvgClippedWidth(anchor) {
+		return Array.from(anchor?.querySelectorAll?.("svg") || []).some((svg) => {
+			const use = svg.querySelector?.("use");
+			if (!use || !isKnownSvgGlyphReference(getSvgUseHref(use))) return false;
+
+			const clippedWidth = getSvgClippedWidth(svg);
+			return clippedWidth !== null && Math.abs(clippedWidth - SVG_AD_CLIPPED_WIDTH) <= SVG_AD_CLIPPED_WIDTH_TOLERANCE;
+		});
 	}
 
 	function isSvgAdDisclosureLabel(anchor) {
 		if (!hasSvgGlyphReference(anchor)) return false;
-		if (!isCompactSvgLabel(anchor)) return false;
+		if (!hasAdSvgClippedWidth(anchor)) return false;
 		return !!findMetadataRow(anchor);
 	}
 
@@ -245,7 +269,7 @@
 	function collectSvgGlyphAnchors() {
 		const candidates = new Set();
 		document.querySelectorAll(SVG_USE_SELECTOR).forEach((use) => {
-			if (SVG_GLYPH_REF_RE.test(getSvgUseHref(use))) {
+			if (isKnownSvgGlyphReference(getSvgUseHref(use))) {
 				const anchor = use.closest("a");
 				if (anchor) candidates.add(anchor);
 			}
@@ -253,29 +277,22 @@
 		return candidates;
 	}
 
-	// Add new Facebook label variants here; each detector owns its candidates and match rule.
+	// Both detectors verify the label itself: reconstructed text or measured SVG clipping.
 	const AD_LABEL_DETECTORS = [
 		{
-			name: "ads-about",
-			selectors: [ADS_ABOUT_SELECTOR],
+			name: "obfuscated-text",
+			selectors: [PRIVACY_ATTR_SELECTOR, OBFUSCATED_LABEL_LINK_SELECTOR],
 			detect(anchor) {
-				if (!isKnownAdDisclosureLink(anchor)) return null;
-				return hasSvgGlyphReference(anchor) ? "ads-about-svg" : "ads-about-link";
+				if (!anchor.matches?.(PRIVACY_ATTR_SELECTOR) && !isObfuscatedLabelLink(anchor)) return null;
+				if (!findMetadataRow(anchor)) return null;
+				return isLikelyAdLabel(reconstructVisibleText(anchor)) ? "obfuscated-text" : null;
 			},
 		},
 		{
-			name: "svg-metadata",
+			name: "svg-clipped-width",
 			collectCandidates: collectSvgGlyphAnchors,
 			detect(anchor) {
-				return isSvgAdDisclosureLabel(anchor) ? "svg-metadata" : null;
-			},
-		},
-		{
-			name: "obfuscated-text",
-			selectors: [PRIVACY_ATTR_SELECTOR, TRACKING_HREF_SELECTOR],
-			detect(anchor) {
-				if (!anchor.matches?.(PRIVACY_ATTR_SELECTOR) && !hasTrackingHref(anchor)) return null;
-				return isLikelyAdLabel(reconstructVisibleText(anchor)) ? "obfuscated-text" : null;
+				return isSvgAdDisclosureLabel(anchor) ? "svg-clipped-width" : null;
 			},
 		},
 	];
@@ -317,9 +334,16 @@
 		placeholderByPost.set(post, ph);
 	}
 
+	function applyDebugPositioning(post) {
+		post.classList.remove("sponsored-debug-positioned");
+		if (window.getComputedStyle(post).position === "static") {
+			post.classList.add("sponsored-debug-positioned");
+		}
+	}
+
 	function markPost(post, mode /* 'hide' | 'highlight' */, method = "auto-detected") {
 		if (!post) return;
-		post.classList.remove("sponsored-hidden-post", "sponsored-detected-post");
+		post.classList.remove("sponsored-hidden-post", "sponsored-detected-post", "sponsored-debug-positioned");
 		post.dataset.sponsorDetectorMethod = method;
 		if (mode === "hide") {
 			if (SETTINGS.showBanner) {
@@ -331,13 +355,14 @@
 		} else {
 			removePlaceholderFor(post);
 			post.classList.add("sponsored-detected-post");
+			applyDebugPositioning(post);
 		}
 		markedPosts.add(post);
 	}
 
 	function unmark(post) {
 		if (!post) return;
-		post.classList.remove("sponsored-hidden-post", "sponsored-detected-post");
+		post.classList.remove("sponsored-hidden-post", "sponsored-detected-post", "sponsored-debug-positioned");
 		delete post.dataset.sponsorDetectorMethod;
 		removePlaceholderFor(post);
 	}
@@ -353,10 +378,21 @@
 		}
 	}
 
+	function revealHiddenPostsForDebug() {
+		if (!SETTINGS.enabled || !SETTINGS.debugMode) return;
+
+		for (const post of document.querySelectorAll(".sponsored-hidden-post")) {
+			const method = post.dataset.sponsorDetectorMethod || "previous-detection";
+			markPost(post, "highlight", method);
+		}
+	}
+
 	function scanForAdLabels() {
 		if (!SETTINGS.enabled) return;
+		revealHiddenPostsForDebug();
 
 		const matchedAnchors = new WeakSet();
+		const matchedPosts = new WeakSet();
 		for (const detector of AD_LABEL_DETECTORS) {
 			for (const a of getDetectorCandidates(detector)) {
 				if (matchedAnchors.has(a)) continue;
@@ -367,7 +403,9 @@
 
 				const post = getPostContainerFrom(a) || a.closest(POST_SELECTOR_STR);
 				if (!post) continue;
+				if (matchedPosts.has(post)) continue;
 
+				matchedPosts.add(post);
 				markPost(post, SETTINGS.debugMode ? "highlight" : "hide", method);
 			}
 		}
@@ -382,8 +420,8 @@
 				}
 				if (
 					m.type === "attributes" &&
-					(m.attributeName === "attributionsrc" || m.attributeName === "href") &&
-					m.target?.matches?.(AD_LABEL_ATTRIBUTE_SELECTOR)
+					(m.attributeName === "attributionsrc" || m.attributeName === "href" || m.attributeName === "xlink:href") &&
+					(m.target?.matches?.(AD_LABEL_ATTRIBUTE_SELECTOR) || m.target?.matches?.(SVG_USE_SELECTOR))
 				) {
 					rafDebounce(scanForAdLabels);
 					return;
@@ -395,15 +433,16 @@
 			subtree: true,
 			childList: true,
 			attributes: true,
-			attributeFilter: ["attributionsrc", "href"],
+			attributeFilter: ["attributionsrc", "href", "xlink:href"],
 		});
 
 		scanForAdLabels();
 	}
 
-	function initialize() {
+	async function initialize() {
 		injectStylesOnce();
 		wireSettingsSync();
+		await loadInitialSettings();
 		initObserver();
 	}
 
